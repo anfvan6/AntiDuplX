@@ -1,0 +1,29 @@
+name: Build AntiDuplX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        run: msbuild prj\vs2022\AntiDuplX.sln /p:Configuration=Release /p:Platform=x64 /m /nologo
+
+      - name: Smoke test
+        run: bin\v143\x64\Release\AntiDuplX.exe --version
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: AntiDuplX-x64
+          path: bin/v143/x64/Release/AntiDuplX.exe
+          if-no-files-found: error
