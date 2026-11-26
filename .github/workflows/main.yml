@@ -15,22 +15,53 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install MSVC 14.38 toolset (Windows 7 compatible)
+      - name: Get Win7-compatible MSVC toolset (14.30-14.39)
         shell: pwsh
         run: |
-          $installer = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe"
           $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
-          $args = @('modify', '--installPath', "`"$vsPath`"",
-                    '--add', 'Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64',
-                    '--quiet', '--norestart', '--wait')
-          $p = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
-          if ($p.ExitCode -notin 0, 3010) { throw "VS installer exit code: $($p.ExitCode)" }
-          $tools = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory |
-            Where-Object { $_.Name -like "14.38.*" } |
-            Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $tools) { throw "MSVC 14.38 toolset not found after install" }
-          Add-Content -Path $env:GITHUB_ENV -Value "VCToolsVersion=$($tools.Name)"
-          Write-Host "Using MSVC $($tools.Name)"
+          $msvcDir = "$vsPath\VC\Tools\MSVC"
+          $installer = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe"
+
+          function Find-Toolset {
+            if (Test-Path $msvcDir) {
+              Get-ChildItem $msvcDir -Directory |
+                Where-Object { $_.Name -like "14.3*" } |
+                Sort-Object Name -Descending | Select-Object -First 1
+            }
+          }
+
+          Write-Host "Installed MSVC toolsets:"
+          if (Test-Path $msvcDir) { Get-ChildItem $msvcDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" } }
+
+          $t = Find-Toolset
+          if ($t) {
+            Add-Content -Path $env:GITHUB_ENV -Value "VCToolsVersion=$($t.Name)"
+            Write-Host "Using preinstalled MSVC $($t.Name)"
+            exit 0
+          }
+
+          foreach ($id in @(
+            "Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64",
+            "Microsoft.VisualStudio.Component.VC.14.39.17.9.x86.x64")) {
+            Write-Host "Trying to install $id ..."
+            $installerArgs = "modify --installPath `"$vsPath`" --add $id --quiet --norestart --wait --noUpdateInstaller"
+            $p = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
+            Write-Host "Installer exit code: $($p.ExitCode)"
+            $t = Find-Toolset
+            if ($t) {
+              Add-Content -Path $env:GITHUB_ENV -Value "VCToolsVersion=$($t.Name)"
+              Write-Host "Using MSVC $($t.Name)"
+              exit 0
+            }
+          }
+
+          Write-Host "=== VS installer logs (tail) ==="
+          Get-ChildItem $env:TEMP -Filter "dd_*.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+              Write-Host "--- $($_.FullName) ---"
+              Get-Content $_.FullName -Tail 80
+            }
+          throw "Could not obtain a Win7-compatible MSVC toolset"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
