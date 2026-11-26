@@ -15,7 +15,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Get Win7-compatible MSVC toolset (any v143 14.30-14.39)
+      - name: Get Win7-compatible MSVC toolset
         shell: pwsh
         run: |
           $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
@@ -25,38 +25,41 @@ jobs:
           function Find-Toolset {
             if (Test-Path $msvcDir) {
               Get-ChildItem $msvcDir -Directory |
-                Where-Object { $_.Name -like "14.3*" } |
+                Where-Object { $_.Name -like "14.3*" -or $_.Name -like "14.29.*" } |
                 Sort-Object Name -Descending | Select-Object -First 1
             }
           }
 
           Write-Host "Installed MSVC toolsets:"
-          if (Test-Path $msvcDir) { Get-ChildItem $msvcDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" } }
+          if (Test-Path $msvcDir) {
+            Get-ChildItem $msvcDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
+          } else {
+            Write-Host "  (directory $msvcDir not found)"
+          }
 
           $t = Find-Toolset
           if ($t) {
+            $toolset = if ($t.Name -like "14.29.*") { "v142" } else { "v143" }
             Add-Content -Path $env:GITHUB_ENV -Value "VCToolsVersion=$($t.Name)"
-            Write-Host "Using preinstalled MSVC $($t.Name)"
+            Add-Content -Path $env:GITHUB_ENV -Value "PLATFORM_TOOLSET=$toolset"
+            Add-Content -Path $env:GITHUB_ENV -Value "OUTDIR=bin\$toolset\Win32\Release"
+            Write-Host "Using preinstalled MSVC $($t.Name) (PlatformToolset=$toolset)"
             exit 0
           }
 
-          $candidates = @(
+          foreach ($id in @(
             "Microsoft.VisualStudio.Component.VC.14.39.17.9.x86.x64",
-            "Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64",
-            "Microsoft.VisualStudio.Component.VC.14.37.17.7.x86.x64",
-            "Microsoft.VisualStudio.Component.VC.14.36.17.6.x86.x64",
-            "Microsoft.VisualStudio.Component.VC.14.35.17.5.x86.x64",
-            "Microsoft.VisualStudio.Component.VC.14.34.17.4.x86.x64"
-          )
-          foreach ($id in $candidates) {
-            Write-Host "Trying $id ..."
-            $cmdline = "modify --installPath `"$vsPath`" --add $id --quiet --norestart --wait"
-            $p = Start-Process -FilePath $installer -ArgumentList $cmdline -Wait -PassThru
-            Write-Host "  exit code: $($p.ExitCode)"
+            "Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64")) {
+            Write-Host "Trying to install $id ..."
+            $installerArgs = "modify --installPath `"$vsPath`" --add $id --quiet --norestart --wait --noUpdateInstaller"
+            $p = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
+            Write-Host "Installer exit code: $($p.ExitCode)"
             $t = Find-Toolset
             if ($t) {
               Add-Content -Path $env:GITHUB_ENV -Value "VCToolsVersion=$($t.Name)"
-              Write-Host "SUCCESS: using MSVC $($t.Name)"
+              Add-Content -Path $env:GITHUB_ENV -Value "PLATFORM_TOOLSET=v143"
+              Add-Content -Path $env:GITHUB_ENV -Value "OUTDIR=bin\v143\Win32\Release"
+              Write-Host "Using MSVC $($t.Name) (PlatformToolset=v143)"
               exit 0
             }
           }
@@ -65,9 +68,9 @@ jobs:
           Get-ChildItem $env:TEMP -Filter "dd_*.log" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
               Write-Host "--- $($_.FullName) ---"
-              Get-Content $_.FullName -Tail 100
+              Get-Content $_.FullName -Tail 60
             }
-          throw "No Win7-compatible MSVC toolset could be installed"
+          throw "Could not obtain a Win7-compatible MSVC toolset"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
@@ -75,15 +78,24 @@ jobs:
       - name: Build Release Win32
         env:
           CL: /D_WIN32_WINNT=0x0601 /DWINVER=0x0601
-        run: msbuild prj\vs2022\AntiDuplX.sln /p:Configuration=Release /p:Platform=Win32 /p:VCToolsVersion=${{ env.VCToolsVersion }} /m /nologo
+        run: msbuild prj\vs2022\AntiDuplX.sln /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=${{ env.PLATFORM_TOOLSET }} /p:VCToolsVersion=${{ env.VCToolsVersion }} /m /nologo
 
       - name: Smoke test
+        shell: pwsh
         run: |
-          dir bin\v143\Win32\Release
-          bin\v143\Win32\Release\AntiDuplX.exe --version
+          Get-ChildItem $env:OUTDIR
+          & "$env:OUTDIR\AntiDuplX.exe" --version
 
       - name: Pack zip
-        run: Compress-Archive -Path bin/v143/Win32/Release/*.exe, bin/v143/Win32/Release/*.dll -DestinationPath AntiDuplX-win7-x86.zip -Force
+        shell: pwsh
+        run: Compress-Archive -Path "$env:OUTDIR\*.exe", "$env:OUTDIR\*.dll" -DestinationPath AntiDuplX-win7-x86.zip -Force
+
+      - name: Upload artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AntiDuplX-win7-x86
+          path: AntiDuplX-win7-x86.zip
+          if-no-files-found: error
 
       - name: Publish to Releases
         uses: softprops/action-gh-release@v2
@@ -91,7 +103,7 @@ jobs:
           tag_name: win7-build-${{ github.run_number }}
           name: AntiDuplX Win7 x86 (build ${{ github.run_number }})
           body: |
-            32-битная сборка для Windows 7 SP1+ (MSVC 14.38, _WIN32_WINNT=0x0601).
+            32-битная сборка для Windows 7 SP1+ (Win7-совместимый тулсет MSVC, _WIN32_WINNT=0x0601).
             Коммит: ${{ github.sha }}
             В архиве AntiDuplX.exe + Simd.dll — распакуйте все файлы в одну папку.
           files: AntiDuplX-win7-x86.zip
