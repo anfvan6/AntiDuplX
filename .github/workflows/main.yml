@@ -1,0 +1,62 @@
+name: Build AntiDuplX (Win7 x86)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install MSVC 14.38 toolset (Windows 7 compatible)
+        shell: pwsh
+        run: |
+          $installer = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe"
+          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+          $args = @('modify', '--installPath', "`"$vsPath`"",
+                    '--add', 'Microsoft.VisualStudio.Component.VC.14.38.17.8.x86.x64',
+                    '--quiet', '--norestart', '--wait')
+          $p = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+          if ($p.ExitCode -notin 0, 3010) { throw "VS installer exit code: $($p.ExitCode)" }
+          $tools = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory |
+            Where-Object { $_.Name -like "14.38.*" } |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $tools) { throw "MSVC 14.38 toolset not found after install" }
+          Add-Content -Path $env:GITHUB_ENV -Value "VCToolsVersion=$($tools.Name)"
+          Write-Host "Using MSVC $($tools.Name)"
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release Win32
+        env:
+          CL: /D_WIN32_WINNT=0x0601 /DWINVER=0x0601
+        run: msbuild prj\vs2022\AntiDuplX.sln /p:Configuration=Release /p:Platform=Win32 /p:VCToolsVersion=${{ env.VCToolsVersion }} /m /nologo
+
+      - name: Smoke test
+        run: |
+          dir bin\v143\Win32\Release
+          bin\v143\Win32\Release\AntiDuplX.exe --version
+
+      - name: Pack zip
+        run: Compress-Archive -Path bin/v143/Win32/Release/*.exe, bin/v143/Win32/Release/*.dll -DestinationPath AntiDuplX-win7-x86.zip -Force
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: win7-build-${{ github.run_number }}
+          name: AntiDuplX Win7 x86 (build ${{ github.run_number }})
+          body: |
+            32-битная сборка для Windows 7 SP1+ (MSVC 14.38, _WIN32_WINNT=0x0601).
+            Коммит: ${{ github.sha }}
+            В архиве AntiDuplX.exe + Simd.dll — распакуйте все файлы в одну папку.
+          files: AntiDuplX-win7-x86.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true
